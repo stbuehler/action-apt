@@ -1,0 +1,60 @@
+name: 'apt'
+description: 'Install ubuntu packages from a reasonable mirror'
+inputs:
+  cache-key:
+    description: 'key for cache (lists and downloaded packages)'
+    required: false
+  mirror:
+    description: '(Main) mirror to use'
+    required: true
+    default: "ftp.uni-stuttgart.de"
+  packages:
+    description: 'Packages to install (without "recommended" dependencies)'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Configure mirror
+      shell: sh
+      env:
+        ARCHIVE: ${{ inputs.mirror }}
+      run: sudo sed -i -e "s#://azure.archive.ubuntu.com/ubuntu/#://$ARCHIVE/ubuntu/#" /etc/apt/apt-mirrors.txt
+    - name: Load cache
+      id: cache-apt-restore
+      if: inputs.cache-key
+      uses: actions/cache/restore@v4
+      with:
+        key: ${{ inputs.cache-key }}
+        path: |
+          /tmp/apt-cache
+    - name: Copy cached apt parts to target directories
+      # actions/cache only runs as normal user, so need to copy files as root between dirs
+      if: inputs.cache-key && steps.cache-apt-restore.outputs.cache-hit == 'true'
+      shell: sh
+      run: |
+        sudo rsync -r /tmp/apt-cache/archives/ /var/cache/apt/archives/
+        sudo rsync -r /tmp/apt-cache/lists/ /var/lib/apt/lists/
+    - name: Update package list
+      shell: sh
+      run: sudo apt-get update
+    - name: Install packages
+      shell: sh
+      run: sudo apt-get install --no-install-recommends -y ${{ inputs.packages }}
+    - name: List cached packages
+      if: inputs.cache-key && steps.cache-apt-restore.outputs.cache-hit != 'true'
+      shell: sh
+      run: sudo find /var/cache/apt/archives/
+    - name: Copy apt data for storing in cache
+      if: inputs.cache-key && steps.cache-apt-restore.outputs.cache-hit != 'true'
+      shell: sh
+      run: |
+        mkdir -p /tmp/apt-cache
+        rsync -r -f'+ *.deb' -f'- *' /var/cache/apt/archives/ /tmp/apt-cache/archives/
+        rsync -r -f'- partial' -f'- lock' -f'- auxfiles' /var/lib/apt/lists/ /tmp/apt-cache/lists/
+    - name: Save cache
+      if: inputs.cache-key && steps.cache-apt-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        key: ${{ inputs.cache-key }}
+        path: |
+          /tmp/apt-cache
